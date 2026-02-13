@@ -13,22 +13,31 @@
  * For more information, see here https://firebase.google.com/docs/functions/config-env
  */
 
-const admin = require('firebase-admin');
-const functions = require('firebase-functions');
-const sgClient = require('@sendgrid/client');
-const uuidv4 = require('uuid/v4');
-const request = require('request');
+import { initializeApp } from "firebase-admin/app";
+import { getFirestore } from "firebase-admin/firestore";
+import { setGlobalOptions } from "firebase-functions/v2";
+import { onDocumentCreated } from "firebase-functions/v2/firestore";
+import { onRequest } from "firebase-functions/v2/https";
+import { defineString } from "firebase-functions/params";
+import { TransactionalEmailsApi, SendSmtpEmail } from "@getbrevo/brevo";
+import uuid from 'uuid';
+const { v4: uuidv4 } = uuid;
+
 
 // Closest region to Sydney supporting cloud functions
 const default_region = 'asia-northeast1'; // Tokyo
-const default_collection = functions.config().settings.default_collection;
-admin.initializeApp(functions.config().firebase);
+setGlobalOptions({region: default_region});
+const default_collection = defineString('SETTINGS_DEFAULT_COLLECTION');
+const auth_key = defineString('AUTH_KEY');
+// console.log(default_collection, auth_key);
+initializeApp();
 
-const db = admin.firestore();
+const db = getFirestore();
 
-// Setup Sendgrid client
-sgClient.setApiKey(functions.config().sendgrid.api_key);
-sgClient.setDefaultRequest('baseUrl', 'https://api.sendgrid.com/');
+// Setup Brevo client
+let emailAPI = new TransactionalEmailsApi();
+emailAPI.authentications.apiKey.apiKey = process.env.BREVO_API_KEY;
+
 
 /* Send email with welcome and verification information to the user
  * @param user_id   user's Firebase doc id
@@ -46,66 +55,53 @@ async function sendEmailToNewMember(user_id, data) {
     }
     const minecraft_username = data.minecraft_username || '<none given>';
     const discord_username = data.discord_username || '<none given>';
-
+    console.log(data);
     console.log(to_email);
-    const email_data = {
-        "from": {
-            "email": `${functions.config().sendgrid.from_email}`,
-            "name": `${functions.config().sendgrid.from_name}`
-        },
-        "personalizations": [
-            {
-                "to": [
-                    {
-                        "email": `${to_email}`
-                    }
-                ],
-                "dynamic_template_data": {
-                    "name": `${data.first_name} ${data.last_name}`,
-                    "email": `${data.email}`,
-                    "unsw_email": `${unsw_email}`,
-                    "minecraft_username": `${minecraft_username}`,
-                    "discord_username": `${discord_username}`,
-                    "user_id": `${user_id}`,
-                    "verification_code": `${data.verification_code}`
-                }
-            }
-        ],
-        "template_id": `${functions.config().sendgrid.template_id}`
-    };
+    // console.log(`${process.env.BREVO_FROM_NAME}`);
 
-    const email_request = {
-        "body": email_data,
-        "method": "POST",
-        "url": "/v3/mail/send"
-    };
+    let message = new SendSmtpEmail();
+    message.sender = { name: `${process.env.BREVO_FROM_NAME}`, email: `${process.env.BREVO_FROM_EMAIL}` };
+    message.to = [{email: `${to_email}`, name: `${data.first_name} ${data.last_name}`}];
+    // message.templateId = `${process.env.BREVO_TEMPLATE_ID}`;
+    message.subject = "UNSW MCSoc Verification"
+    message.htmlContent = `<!DOCTYPE html><html>
+        <body>
+        <h1>Verify Your Email</h1>
+        <p>Hey there {{params.minecraft_username}},<br>
+        <br>
+        Thanks for your interest in joining our society! To verify your account, please DM the following to the bot:<br>
+        <code>!verify {{params.user_id}} {{params.verification_code}}</code> .<br>
+        <br>
+        Sincerely,<br>
+        UNSW Minecraft Society Team.</p>`
+    //message.textContent = "Hey there {{params.minecraft_username}},\n\n  Thanks for your interest in joining our society! To verify your account, please DM the following to the bot: !verify {{params.user_id}} {{params.verification_code}} .\n\nSincerely, UNSW MCSoc Team."
+    message.params = {
+        "name": `${data.first_name} ${data.last_name}`,
+        "email": `${to_email}`,
+        "unsw_email": `${unsw_email}`,
+        "minecraft_username": `${minecraft_username}`,
+        "discord_username": `${discord_username}`,
+        "user_id": `${user_id}`,
+        "verification_code": `${data.verification_code}`
+    },
 
-    const response = await sgClient.request(email_request);
+
+    emailAPI.sendTransacEmail(message)
+    .then((res) => {
+        console.log(JSON.stringify(res.body));
+        return null;
+    })
+    .catch((err) => {
+        console.error(`Error sending email: ${err.code}, ${err.response.statusText}: ${err.response.data.message}`)
+    });
+    
+   /* const response = await sgClient.request(email_request);
     console.log(
         `Email sent to ${to_email} for user ${user_id}. `,
         `Got back response ${response}`);
+   */
 }
 
-/* Send a whitelist request to Minecraft server
- * Requires settings.whitelist_url (e.g. http://url.com:<port>)
- * to be set in Firebase config, and the Autowhitelister plugin
- * installed on the server.
- */
-function whitelistMinecraftUsername(minecraft_username) {
-    request.post(
-        {
-            url: `${functions.config().settings.whitelist_url}`,
-            form: { "username": `${minecraft_username}` }
-        },
-        (err, response, body) => {
-            if (err) {
-                return console.error(err);
-            }
-            console.log('Whitelist request sent. Got back ', body);
-            return;
-        }
-    );
-}
 
 /* Add verification code to new member and fire off an email.
  * This function is triggered whenever there's a new entry
@@ -117,13 +113,17 @@ function whitelistMinecraftUsername(minecraft_username) {
  * @param minecraft_username    Passed to verification email
  * @param email OR unsw_id   So that we have an email to send to
  */
-exports.onNewMember = functions.region(default_region)
-    .firestore
-    .document(`${default_collection}/{userID}`)
-    .onCreate(async (doc, context) => {
+export const onNewMember = onDocumentCreated(
+     "members-test/{userID}",
+    async (event) => {
+        const doc = event.data;        
+        if (!doc) {
+            console.log("No data associated with the event");
+            return;
+        }
+
         const data = doc.data();
         const id = doc.id;
-        const verification_code = uuidv4();
         console.log(`Got document ${id}`);
 
         if (!data.email && !data.unsw_id) {
@@ -131,14 +131,10 @@ exports.onNewMember = functions.region(default_region)
         }
 
         // Add verification status and code to the document
+        const verification_code = uuidv4();
         data.is_verified = false;
         data.verification_code = verification_code;
-        db.collection(default_collection).doc(id).set(data);
-
-        // Whitelist the user
-        if (data.minecraft_username) {
-            whitelistMinecraftUsername(data.minecraft_username);
-        }
+        db.collection(default_collection.value()).doc(id).set(data);
 
         // Then fire off an email!
         await sendEmailToNewMember(id, data);
@@ -163,14 +159,13 @@ exports.onNewMember = functions.region(default_region)
 //
 // Returns HTTP response (200 OK, or some error code)
 //
-exports.addUser = functions
-    .region(default_region)
-    .https.onRequest(async (req, res) => {
+export const addUser = onRequest(async (req, res) => {
         if (req.method !== 'PUT') {
             return res.status(405).send('Incorrect method');
         }
         if (!req.header('Authorization')
-            || req.header('Authorization') !== functions.config().settings.auth_key) {
+            || req.header('Authorization') !== auth_key.value()) {
+            console.error("key: " + auth_key.value());
             console.error('Unauthorized key sent: ', req.header('Authorization'));
             return res.status(401).send('Unauthorized');
         }
@@ -185,7 +180,7 @@ exports.addUser = functions
         const unsw_id = req.body.unsw_id || null;
 
         try {
-            const addDoc = await db.collection(default_collection).add(
+            const addDoc = await db.collection(default_collection.value()).add(
                 {
                     timestamp: timestamp,
                     first_name: first_name,
@@ -224,9 +219,7 @@ exports.addUser = functions
 // {
 //     "is_verified": <boolean>
 // }
-exports.verifyUser = functions
-    .region(default_region)
-    .https.onRequest(async (req, res) => {
+export const verifyUser = onRequest(async (req, res) => {
         if (req.method !== 'POST') {
             return res.status(405).send('Incorrect method');
         }
@@ -239,7 +232,7 @@ exports.verifyUser = functions
         if (!user_id || !verification_code || !discord_id) {
             return res.status(400).send('Invalid data provided');
         }
-        const userRef = db.collection(default_collection).doc(user_id);
+        const userRef = db.collection(default_collection.value()).doc(user_id);
 
         try {
             const userDoc = await userRef.get();
@@ -254,7 +247,7 @@ exports.verifyUser = functions
                 if (verification_code === userData.verification_code) {
                     userData.is_verified = true;
                     userData.discord_id = discord_id;
-                    db.collection(default_collection).doc(user_id).set(userData);
+                    db.collection(default_collection.value()).doc(user_id).set(userData);
                 }
             }
             res.setHeader('Content-Type', 'application/json');
@@ -284,33 +277,25 @@ exports.verifyUser = functions
 //
 // Returns HTTP response (200 OK, or some error code)
 //
-exports.findUser = functions
-    .region(default_region)
-    .https.onRequest(async (req, res) => {
+export const findUser = onRequest(async (req, res) => {
         if (req.method !== 'POST') {
             return res.status(405).send('Incorrect method');
         }
         if (!req.header('Authorization')
-            || req.header('Authorization') !== functions.config().settings.auth_key) {
+            || req.header('Authorization') !== auth_key.value()) {
             console.error('Unauthorized key sent: ', req.header('Authorization'));
-            console.log('Correct key: ', functions.config().settings.auth_key);
             return res.status(401).send('Unauthorized');
         }
 
         console.log('Received search user request. Request body: ', req.body);
         const discord_id = req.body.discord_id || null;
         const minecraft_username = req.body.minecraft_username || null;
-        if (!discord_id && !minecraft_username) {
-            return res.status(400).send('Bad request');
-        }
-
         try {
-            let query = db.collection(default_collection);
-            if (discord_id) {
-                query = query.where('discord_id', '==', discord_id);
-            }
+            let query = db.collection(default_collection.value());
             if (minecraft_username) {
                 query = query.where('minecraft_username', '==', minecraft_username);
+            } else if (discord_id) {
+                query = query.where('discord_username', '==', discord_username);
             }
             const result = await query.get();
 

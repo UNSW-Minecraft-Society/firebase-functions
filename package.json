@@ -10,9 +10,10 @@
   "author": "WeilonYing",
   "license": "ISC",
   "dependencies": {
+    "firebase-functions": "^7.0.5",
     "firebase-tools": "^7.12.1"
   },
   "engines": {
-    "node": "10"
+    "node": "20"
   }
 }

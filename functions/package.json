@@ -1,5 +1,6 @@
 {
   "name": "functions",
+  "type": "module",
   "description": "Cloud Functions for Firebase",
   "scripts": {
     "firebase": "./node_modules/firebase-tools/lib/bin/firebase.js",
@@ -11,13 +12,16 @@
     "logs": "firebase functions:log"
   },
   "engines": {
-    "node": "8"
+    "node": "22"
   },
   "dependencies": {
+    "@getbrevo/brevo": "^3.0.1",
     "@sendgrid/client": "^6.5.1",
-    "firebase-admin": "^8.9.2",
-    "firebase-functions": "^3.3.0",
+    "firebase-admin": "^13.6.1",
+    "firebase-functions": "^7.0.5",
+    "node": "^22.18.0",
     "request": "^2.88.0",
+    "sib-api-v3-typescript": "^2.2.2",
     "uuid": "^3.4.0"
   },
   "devDependencies": {
