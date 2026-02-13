@@ -295,7 +295,7 @@ export const findUser = onRequest(async (req, res) => {
             if (minecraft_username) {
                 query = query.where('minecraft_username', '==', minecraft_username);
             } else if (discord_id) {
-                query = query.where('discord_username', '==', discord_username);
+                query = query.where('discord_username', '==', discord_id);
             }
             const result = await query.get();
 
