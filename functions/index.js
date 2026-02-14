@@ -126,9 +126,9 @@ export const onNewMember = onDocumentCreated(
         const verification_code = uuidv4();
         data.is_verified = false;
         data.verification_code = verification_code;
-
-        data.normalised_minecraft_username = data.minecraft_username.toLowerCase();
-        data.discord_username = data.discord_username.toLowerCase();
+       
+        data.normalised_minecraft_username = (data.minecraft_username ? data.minecraft_username.toLowerCase() : null);
+        if (data.discord_username) data.discord_username = data.discord_username.toLowerCase();
 
         db.collection(default_collection.value()).doc(id).set(data);
 
