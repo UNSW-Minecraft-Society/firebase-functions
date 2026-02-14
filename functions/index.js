@@ -300,7 +300,7 @@ export const findUser = onRequest(
         try {
             let query = db.collection(default_collection.value());
             if (minecraft_username) {
-                query = query.where('minecraft_username', '==', minecraft_username, '||', 'normalised_minecraft_username', '==', minecraft_username.toLowerCase());
+                query = query.where('normalised_minecraft_username', '==', minecraft_username.toLowerCase());
             } else if (discord_username) {
                 query = query.where('discord_username', '==', discord_username);
             }
