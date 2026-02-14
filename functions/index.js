@@ -17,7 +17,7 @@ import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { setGlobalOptions } from "firebase-functions/v2";
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
-import { onRequest } from "firebase-functions/v2/https";
+import { onRequest, onCall } from "firebase-functions/v2/https";
 import { defineString } from "firebase-functions/params";
 import { TransactionalEmailsApi, SendSmtpEmail } from "@getbrevo/brevo";
 import uuid from 'uuid';
@@ -27,11 +27,14 @@ const { v4: uuidv4 } = uuid;
 // Closest region to Sydney supporting cloud functions
 const default_region = 'asia-northeast1'; // Tokyo
 setGlobalOptions({region: default_region});
+
+// environmental parameters
 const default_collection = defineString('SETTINGS_DEFAULT_COLLECTION');
 const auth_key = defineString('AUTH_KEY');
-// console.log(default_collection, auth_key);
+
 initializeApp();
 
+// the firestore database reference
 const db = getFirestore();
 
 // Setup Brevo client
@@ -74,7 +77,6 @@ async function sendEmailToNewMember(user_id, data) {
         <br>
         Sincerely,<br>
         UNSW Minecraft Society Team.</p>`
-    //message.textContent = "Hey there {{params.minecraft_username}},\n\n  Thanks for your interest in joining our society! To verify your account, please DM the following to the bot: !verify {{params.user_id}} {{params.verification_code}} .\n\nSincerely, UNSW MCSoc Team."
     message.params = {
         "name": `${data.first_name} ${data.last_name}`,
         "email": `${to_email}`,
@@ -94,12 +96,6 @@ async function sendEmailToNewMember(user_id, data) {
     .catch((err) => {
         console.error(`Error sending email: ${err.code}, ${err.response.statusText}: ${err.response.data.message}`)
     });
-    
-   /* const response = await sgClient.request(email_request);
-    console.log(
-        `Email sent to ${to_email} for user ${user_id}. `,
-        `Got back response ${response}`);
-   */
 }
 
 
@@ -115,8 +111,8 @@ async function sendEmailToNewMember(user_id, data) {
  */
 export const onNewMember = onDocumentCreated(
      "members-test/{userID}",
-    async (event) => {
-        const doc = event.data;        
+    async (e) => {
+        const doc = e.data;        
         if (!doc) {
             console.log("No data associated with the event");
             return;
@@ -126,20 +122,22 @@ export const onNewMember = onDocumentCreated(
         const id = doc.id;
         console.log(`Got document ${id}`);
 
-        if (!data.email && !data.unsw_id) {
-            throw new Error("Both fields 'email' and 'unsw_id' are empty!");
-        }
-
         // Add verification status and code to the document
         const verification_code = uuidv4();
         data.is_verified = false;
         data.verification_code = verification_code;
+
+        data.normalised_minecraft_username = data.minecraft_username.toLowerCase();
+        data.discord_username = data.discord_username.toLowerCase();
+
         db.collection(default_collection.value()).doc(id).set(data);
 
         // Then fire off an email!
         await sendEmailToNewMember(id, data);
         return;
-    });
+    }
+);
+
 
 // HTTPS API endpoint to add a new member.
 // Content-Type should be application/json
@@ -180,6 +178,10 @@ export const addUser = onRequest(async (req, res) => {
         const unsw_id = req.body.unsw_id || null;
 
         try {
+            if (!discord_username && !minecraft_username) {
+                throw new Error("Both fields 'discord_username' and 'minecraft_username' are empty!");
+            }
+
             const addDoc = await db.collection(default_collection.value()).add(
                 {
                     timestamp: timestamp,
@@ -203,7 +205,8 @@ export const addUser = onRequest(async (req, res) => {
          * below is unreachable, you may re-comment it and continue to deploy
          */
         // return res.status(500).send('Internal server error');
-    });
+    }
+);
 
 
 // HTTPS API endpoint to verify user.
@@ -219,7 +222,8 @@ export const addUser = onRequest(async (req, res) => {
 // {
 //     "is_verified": <boolean>
 // }
-export const verifyUser = onRequest(async (req, res) => {
+export const verifyUser = onRequest(
+    async (req, res) => {
         if (req.method !== 'POST') {
             return res.status(405).send('Incorrect method');
         }
@@ -262,7 +266,9 @@ export const verifyUser = onRequest(async (req, res) => {
          * below is unreachable, you may re-comment it and continue to deploy
          */
         // return res.status(500).send('Internal server error');
-    });
+    }
+);
+
 
 // HTTPS API endpoint to search for a member by Discord ID
 // Content-Type should be application/json
@@ -277,7 +283,8 @@ export const verifyUser = onRequest(async (req, res) => {
 //
 // Returns HTTP response (200 OK, or some error code)
 //
-export const findUser = onRequest(async (req, res) => {
+export const findUser = onRequest(
+    async (req, res) => {
         if (req.method !== 'POST') {
             return res.status(405).send('Incorrect method');
         }
@@ -288,14 +295,14 @@ export const findUser = onRequest(async (req, res) => {
         }
 
         console.log('Received search user request. Request body: ', req.body);
-        const discord_id = req.body.discord_id || null;
+        const discord_username = req.body.discord_id || null;
         const minecraft_username = req.body.minecraft_username || null;
         try {
             let query = db.collection(default_collection.value());
             if (minecraft_username) {
-                query = query.where('minecraft_username', '==', minecraft_username);
-            } else if (discord_id) {
-                query = query.where('discord_username', '==', discord_id);
+                query = query.where('minecraft_username', '==', minecraft_username, '||', 'normalised_minecraft_username', '==', minecraft_username.toLowerCase());
+            } else if (discord_username) {
+                query = query.where('discord_username', '==', discord_username);
             }
             const result = await query.get();
 
@@ -316,6 +323,37 @@ export const findUser = onRequest(async (req, res) => {
          * below is unreachable, you may re-comment it and continue to deploy
          */
         // return res.status(500).send('Internal server error');
-    });
+    }
+);
 
 
+// probably will take forver (a long time)!
+export const normaliseEntries = onCall(
+    async (req) => {
+        const dataset = await db.collection(default_collection.value()).get();
+        const docs_all = dataset.docs;
+
+        const docs_per_transaction = 500;
+        for (let i = 0; i < docs_all.length; i += docs_per_transaction) {
+            console.log(i);
+            const docs_slice = docs_all.slice(i, i + docs_per_transaction);
+            await db.runTransaction(async transaction => {
+                const transaction_docs = await Promise.all(docs_slice.map(doc => transaction.get(doc.ref)));
+
+                transaction_docs.forEach(doc => {
+                    const data = doc.data();
+                    if (data.is_verified == false) {
+                       transaction.delete(doc.ref);
+                    } else {
+                        const norm_mc_username = data.minecraft_username ? data.minecraft_username.toLowerCase() : null;
+                        const disc_username = data.discord_username ? data.discord_username.toLowerCase() : null;
+                        transaction.update(doc.ref, {
+                            normalised_minecraft_username: norm_mc_username,
+                            discord_username: disc_username
+                        });
+                    }
+                });
+            });
+        }
+    }
+);
