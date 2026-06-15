@@ -18,7 +18,7 @@
     "@getbrevo/brevo": "^3.0.1",
     "@sendgrid/client": "^6.5.1",
     "firebase-admin": "^13.6.1",
-    "firebase-functions": "^7.0.5",
+    "firebase-functions": "^7.2.5",
     "node": "^22.18.0",
     "request": "^2.88.0",
     "sib-api-v3-typescript": "^2.2.2",

@@ -2,14 +2,12 @@
  * introductory information and most importantly, provide a verification key so
  * they can join the society Discord server.
  *
- * This function requires the following Firebase config values to be set:
- * sendgrid.api_key             API key to access Sendgrid's email service
- * sendgrid.template_id         Unique ID for the dynamic template to send the email through
- * sendgrid.from_email          Email that the user should reply to
- * sendgrid.from_name           The name of the sender (i.e. us)
- * settings.default_collection  The collection to use by default
- * settings.whitelist_url       The URL to send the whitelist request to
- * settings.auth_key            The key that the addUser HTTPS request must pass to its API header
+ * This function requires the following Firebase env values to be set:
+ * BREVO_API_KEY                API key to access Sendgrid's email service
+ * BREVO_FROM_EMAIL             The sender email to attach to emails
+ * BREVO_FROM_NAME              The sender name to attach to emails
+ * SETTINGS_DEFAULT_COLLECTION  The collection to use by default
+ * AUTH_KEY                     The key that the addUser HTTPS request must pass to its API header
  * For more information, see here https://firebase.google.com/docs/functions/config-env
  */
 
@@ -18,35 +16,40 @@ import { getFirestore } from "firebase-admin/firestore";
 import { setGlobalOptions } from "firebase-functions/v2";
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
 import { onRequest, onCall } from "firebase-functions/v2/https";
-import { defineString } from "firebase-functions/params";
+import { defineString, defineSecret } from "firebase-functions/params";
+
 import { TransactionalEmailsApi, SendSmtpEmail } from "@getbrevo/brevo";
+
 import uuid from 'uuid';
 const { v4: uuidv4 } = uuid;
-
 
 // Closest region to Sydney supporting cloud functions
 const default_region = 'asia-northeast1'; // Tokyo
 setGlobalOptions({region: default_region});
 
 // environmental parameters
-const default_collection = defineString('SETTINGS_DEFAULT_COLLECTION');
-const auth_key = defineString('AUTH_KEY');
+const default_collection = defineString("SETTINGS_DEFAULT_COLLECTION");
+const auth_key = defineString("AUTH_KEY");
+const brevo_api_key_secret = defineSecret("BREVO_API_KEY");
 
 initializeApp();
 
 // the firestore database reference
 const db = getFirestore();
 
-// Setup Brevo client
-let emailAPI = new TransactionalEmailsApi();
-emailAPI.authentications.apiKey.apiKey = process.env.BREVO_API_KEY;
 
+// Function to get the Brevo Email API instance
+function getEmailApiInstance(api_key) {
+    const apiInstance = new TransactionalEmailsApi();
+    apiInstance.authentications.apiKey.apiKey = api_key;
+    return apiInstance;
+}
 
 /* Send email with welcome and verification information to the user
  * @param user_id   user's Firebase doc id
  * @param data      user's Firebase doc data
  */
-async function sendEmailToNewMember(user_id, data) {
+async function sendEmailToNewMember(email_api, user_id, data) {
     // Try UNSW email first
     let to_email = null;
     let unsw_email = 'N/A';
@@ -88,10 +91,10 @@ async function sendEmailToNewMember(user_id, data) {
     },
 
 
-    emailAPI.sendTransacEmail(message)
+    email_api.sendTransacEmail(message)
     .then((res) => {
         console.log(JSON.stringify(res.body));
-        return null;
+        return res;
     })
     .catch((err) => {
         console.error(`Error sending email: ${err.code}, ${err.response.statusText}: ${err.response.data.message}`)
@@ -109,8 +112,10 @@ async function sendEmailToNewMember(user_id, data) {
  * @param minecraft_username    Passed to verification email
  * @param email OR unsw_id   So that we have an email to send to
  */
-export const onNewMember = onDocumentCreated(
-     "members-test/{userID}",
+export const onNewMember = onDocumentCreated({
+    document: "members-test/{userID}",
+    secrets: [brevo_api_key_secret]    
+},
     async (e) => {
         const doc = e.data;        
         if (!doc) {
@@ -130,10 +135,11 @@ export const onNewMember = onDocumentCreated(
         data.normalised_minecraft_username = (data.minecraft_username ? data.minecraft_username.toLowerCase() : null);
         if (data.discord_username) data.discord_username = data.discord_username.toLowerCase();
 
-        db.collection(default_collection.value()).doc(id).set(data);
+        await db.collection(default_collection.value()).doc(id).set(data);
 
         // Then fire off an email!
-        await sendEmailToNewMember(id, data);
+        const api_instance = getEmailApiInstance(brevo_api_key_secret.value());
+        await sendEmailToNewMember(api_instance, id, data);
         return;
     }
 );
@@ -309,7 +315,9 @@ export const findUser = onRequest(
             const payload = [];
             if (!result.empty) {
                 result.forEach(doc => {
-                    payload.push(doc.data());
+                    let data = doc.data();
+                    data["firestore_id"] = doc.id;
+                    payload.push(data);
                 });
             }
             return res.json({ "results": payload });
