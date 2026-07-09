@@ -132,8 +132,8 @@ export const onNewMember = onDocumentCreated({
         data.is_verified = false;
         data.verification_code = verification_code;
        
-        data.normalised_minecraft_username = (data.minecraft_username ? data.minecraft_username.toLowerCase() : null);
-        if (data.discord_username) data.discord_username = data.discord_username.toLowerCase();
+        data.normalised_minecraft_username = (data.minecraft_username ? data.minecraft_username.trim().toLowerCase() : null);
+        if (data.discord_username) data.discord_username = data.discord_username.trim().toLowerCase();
 
         await db.collection(default_collection.value()).doc(id).set(data);
 
@@ -306,9 +306,9 @@ export const findUser = onRequest(
         try {
             let query = db.collection(default_collection.value());
             if (minecraft_username) {
-                query = query.where('normalised_minecraft_username', '==', minecraft_username.toLowerCase());
+                query = query.where('normalised_minecraft_username', '==', minecraft_username.trim().toLowerCase());
             } else if (discord_username) {
-                query = query.where('discord_username', '==', discord_username);
+                query = query.where('discord_username', '==', discord_username.trim());
             }
             const result = await query.get();
 
@@ -353,8 +353,8 @@ export const normaliseEntries = onCall(
                     if (data.is_verified == false) {
                        transaction.delete(doc.ref);
                     } else {
-                        const norm_mc_username = data.minecraft_username ? data.minecraft_username.toLowerCase() : null;
-                        const disc_username = data.discord_username ? data.discord_username.toLowerCase() : null;
+                        const norm_mc_username = data.minecraft_username ? data.minecraft_username.trim().toLowerCase() : null;
+                        const disc_username = data.discord_username ? data.discord_username.trim().toLowerCase() : null;
                         transaction.update(doc.ref, {
                             normalised_minecraft_username: norm_mc_username,
                             discord_username: disc_username
