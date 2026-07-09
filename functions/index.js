@@ -114,10 +114,10 @@ async function sendEmailToNewMember(email_api, user_id, data) {
  */
 export const onNewMember = onDocumentCreated({
     document: "members-test/{userID}",
-    secrets: [brevo_api_key_secret]    
+    secrets: [brevo_api_key_secret]
 },
     async (e) => {
-        const doc = e.data;        
+        const doc = e.data;
         if (!doc) {
             console.log("No data associated with the event");
             return;
@@ -131,7 +131,7 @@ export const onNewMember = onDocumentCreated({
         const verification_code = uuidv4();
         data.is_verified = false;
         data.verification_code = verification_code;
-       
+
         data.normalised_minecraft_username = (data.minecraft_username ? data.minecraft_username.trim().toLowerCase() : null);
         if (data.discord_username) data.discord_username = data.discord_username.trim().toLowerCase();
 
@@ -276,7 +276,7 @@ export const verifyUser = onRequest(
 );
 
 
-// HTTPS API endpoint to search for a member by Discord ID
+// HTTPS API endpoint to search for a member by Discord ID or Minecraft Username
 // Content-Type should be application/json
 // Header should have this parameter:
 //     "Authorization": <string>
@@ -308,7 +308,7 @@ export const findUser = onRequest(
             if (minecraft_username) {
                 query = query.where('normalised_minecraft_username', '==', minecraft_username.trim().toLowerCase());
             } else if (discord_username) {
-                query = query.where('discord_username', '==', discord_username.trim());
+                query = query.where('discord_username', '==', discord_username.trim().toLowerCase());
             }
             const result = await query.get();
 
@@ -335,9 +335,82 @@ export const findUser = onRequest(
 );
 
 
+// HTTPS API endpoint to normalise member entries by Discord ID or Minecraft Username
+// Content-Type should be application/json
+// Header should have this parameter:
+//     "Authorization": <string>
+//     "Content-Type": application/json
+// JSON should be like this:
+// {
+//     "discord_id": <string> <optional>,
+//     "minecraft_username": <string> <optional>
+// }
+//
+// Returns HTTP response (200 OK, or some error code)
+//
+export const normaliseEntry = onRequest(
+    async (req, res) => {
+        if (req.method !== 'POST') {
+            return res.status(405).send('Incorrect method');
+        }
+        if (!req.header('Authorization')
+            || req.header('Authorization') !== auth_key.value()) {
+            console.error('Unauthorized key sent: ', req.header('Authorization'));
+            return res.status(401).send('Unauthorized');
+        }
+
+        console.log('Received search user request. Request body: ', req.body);
+        const discord_username = req.body.discord_id || null;
+        const minecraft_username = req.body.minecraft_username || null;
+        try {
+            let query = db.collection(default_collection.value());
+            if (minecraft_username) {
+                query = query.where('normalised_minecraft_username', '==', minecraft_username.trim().toLowerCase());
+            } else if (discord_username) {
+                query = query.where('discord_username', '==', discord_username.trim().toLowerCase());
+            }
+            const result = await query.get();
+
+            const payload = [];
+            if (!result.empty) {
+                await db.runTransaction(async transaction => {
+                    result.forEach(doc => {
+                        const data = doc.data();
+                        payload.push(data);
+                        if (data.is_verified == false) {
+                           transaction.delete(doc.ref);
+                        } else {
+                            const norm_mc_username = data.minecraft_username ? data.minecraft_username.trim().toLowerCase() : null;
+                            const disc_username = data.discord_username ? data.discord_username.trim().toLowerCase() : null;
+                            transaction.update(doc.ref, {
+                                normalised_minecraft_username: norm_mc_username,
+                                discord_username: disc_username
+                            });
+                        }
+                    });
+                });
+            }
+            return res.json({ "results": payload });
+        } catch (err) {
+            console.error(err);
+            return res.status(500).send('Internal server error');
+        }
+    }
+);
+
+
 // probably will take forver (a long time)!
 export const normaliseEntries = onCall(
-    async (req) => {
+    async (req, res) => {
+        if (req.method !== 'POST') {
+            return res.status(405).send('Incorrect method');
+        }
+        if (!req.header('Authorization')
+            || req.header('Authorization') !== auth_key.value()) {
+            console.error('Unauthorized key sent: ', req.header('Authorization'));
+            return res.status(401).send('Unauthorized');
+        }
+
         const dataset = await db.collection(default_collection.value()).get();
         const docs_all = dataset.docs;
 
